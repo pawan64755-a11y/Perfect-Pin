@@ -267,7 +267,7 @@
   <div class="wordBar" id="wordBar">
     <span class="wname" id="wordName"></span>
     <button id="wordMinus">−</button>
-    <input type="range" id="wordScale" min="30" max="300" step="5" value="100" />
+    <input type="range" id="wordScale" min="30" max="500" step="5" value="100" />
     <button id="wordPlus">+</button>
     <span class="wpct" id="wordPct">100%</span>
     <button id="wordReset" title="Reset this word">↺</button>
@@ -287,8 +287,15 @@
   <div class="hint">👆 Tap any word to resize it · 📌 Drag the image to reposition · "Zoom" to crop tighter</div>
 
   <div class="controls">
-    <label class="small">Font Size <span id="fontSizeVal">84</span>px (auto-shrinks to fit)
-      <input type="range" id="fontSize" min="28" max="150" value="84" />
+    <label class="small">Font Size <span id="fontSizeVal">84</span>px (max 500 — always fits inside the pin)
+      <input type="range" id="fontSize" min="28" max="500" value="84" />
+    </label>
+    <div class="row">
+      <button id="maxFitBtn" class="primary">🔠 Max Fit</button>
+      <button id="resetWordsBtn">↺ Reset Word Sizes</button>
+    </div>
+    <label class="small">Line Spacing <span id="lineSpacingVal">118</span>%
+      <input type="range" id="lineSpacing" min="85" max="160" value="118" />
     </label>
 
     <textarea id="factText" autocomplete="off" placeholder="Write a curiosity hook (4-9 words)..."></textarea>
@@ -445,6 +452,7 @@
     customBg: null,   // { bgColors: [hex] or [hex,hex], text } — Full Text mode only
     textRatio: 0.42,   // fraction of height given to the TEXT area (top)
     fontSize: 84,
+    lineSpacing: 1.18,
     ctaOn: true, ctaText: "READ FULL ARTICLE →", blogUrl: "",
     text: factText.value,
     zoom: 1,          // 1 = fully fit, higher = zoomed in / more cropped
@@ -631,8 +639,8 @@
     const availH = textAreaH - 70;
     let fs = state.fontSize, lines, lineHeights, totalTextHeight;
     const baseFont = (size) => `${state.font.weight} ${size}px ${state.font.stack}`;
-    for (;;) { // shrink font until the hook fits its area
-      ctx.font = baseFont(fs);
+    const tryFit = (size) => { // lay text out at `size`; true when it stays inside the text area
+      ctx.font = baseFont(size);
       let gi = 0; lines = [];
       paragraphs.forEach(para => {
         const pw = para.toUpperCase().split(/\s+/).filter(Boolean);
@@ -640,18 +648,24 @@
         const objs = pw.map(word => {
           const idx = gi++;
           const scale = state.wordScales[idx] || 1;
-          ctx.font = baseFont(fs * scale);
+          ctx.font = baseFont(size * scale);
           return { word, idx, scale, width: ctx.measureText(word).width };
         });
-        ctx.font = baseFont(fs); // space width is measured at the base size
+        ctx.font = baseFont(size); // space width is measured at the base size
         layoutLines(objs, maxWidth).forEach(l => lines.push(l));
       });
-      lineHeights = lines.map(l => fs * 1.18 * (l.length ? Math.max(...l.map(w => w.scale)) : 1));
-      totalTextHeight = lineHeights.reduce((a, b) => a + b, 0);
+      lineHeights = lines.map(l => size * state.lineSpacing * (l.length ? Math.max(...l.map(w => w.scale)) : 1));
+      totalTextHeight = lineHeights.reduce((x, y) => x + y, 0);
       const tooWide = lines.some(l => l.length === 1 && l[0].width > maxWidth);
-      if ((totalTextHeight <= availH && !tooWide) || fs <= 24) break;
-      fs -= 2;
+      return totalTextHeight <= availH && !tooWide;
+    };
+    // Biggest size (up to the slider value, max 500) that still fits — text can never spill outside
+    let lo = 24, hi = Math.max(24, state.fontSize);
+    if (!tryFit(hi)) {
+      while (hi - lo > 1) { const mid = (lo + hi) >> 1; if (tryFit(mid)) lo = mid; else hi = mid; }
+      hi = lo; tryFit(hi);
     }
+    fs = hi;
     ctx.font = baseFont(fs);
     const spaceWidth = ctx.measureText(' ').width;
     const lineYs = [];
@@ -796,7 +810,7 @@
 
   function setWordScale(pct) {
     if (state.selectedWord === null) return;
-    pct = Math.max(30, Math.min(300, pct));
+    pct = Math.max(30, Math.min(500, pct));
     if (pct === 100) delete state.wordScales[state.selectedWord];
     else state.wordScales[state.selectedWord] = pct / 100;
     drawCard();
@@ -829,7 +843,7 @@
   function ratioFromClientY(clientY) {
     const rect = container.getBoundingClientRect();
     let ratio = (clientY - rect.top) / rect.height;
-    return Math.max(0.15, Math.min(0.6, ratio));
+    return Math.max(0.15, Math.min(0.85, ratio));
   }
   divider.addEventListener('pointerdown', (e) => {
     dragging = true;
@@ -979,6 +993,18 @@
     fontSizeVal.textContent = state.fontSize;
     drawCard();
   });
+  const lineSpacingInput = document.getElementById('lineSpacing'), lineSpacingVal = document.getElementById('lineSpacingVal');
+  lineSpacingInput.addEventListener('input', () => {
+    state.lineSpacing = parseInt(lineSpacingInput.value, 10) / 100;
+    lineSpacingVal.textContent = lineSpacingInput.value;
+    drawCard();
+  });
+  document.getElementById('maxFitBtn').addEventListener('click', () => {
+    state.fontSize = 500; fontSizeInput.value = 500; fontSizeVal.textContent = 500; drawCard();
+  });
+  document.getElementById('resetWordsBtn').addEventListener('click', () => {
+    state.wordScales = {}; drawCard();
+  });
   zoomInput.addEventListener('input', () => {
     state.zoom = parseInt(zoomInput.value, 10) / 100;
     zoomVal.textContent = zoomInput.value;
@@ -1056,7 +1082,7 @@
     try {
       localStorage.setItem(STYLE_KEY, JSON.stringify({
         fontId: state.font.id, comboIndex: state.comboIndex, customBg: state.customBg,
-        fontSize: state.fontSize, textRatio: state.textRatio, fullText: state.fullText,
+        fontSize: state.fontSize, lineSpacing: state.lineSpacing, textRatio: state.textRatio, fullText: state.fullText,
         bgBlur: state.bgBlur, bgTint: state.bgTint,
         outline: state.outline, outlineWidth: state.outlineWidth, outlineColor: state.outlineColor,
         ctaOn: state.ctaOn, ctaText: state.ctaText
@@ -1071,8 +1097,9 @@
       const f = FONT_OPTIONS.find(x => x.id === d.fontId); if (f) state.font = f;
       if (num(d.comboIndex, 0, COMBOS.length - 1)) state.comboIndex = d.comboIndex;
       if (d.customBg && Array.isArray(d.customBg.bgColors) && d.customBg.text) state.customBg = d.customBg;
-      if (num(d.fontSize, 28, 150)) { state.fontSize = d.fontSize; fontSizeInput.value = d.fontSize; fontSizeVal.textContent = d.fontSize; }
+      if (num(d.fontSize, 28, 500)) { state.fontSize = d.fontSize; fontSizeInput.value = d.fontSize; fontSizeVal.textContent = d.fontSize; }
       if (num(d.textRatio, 0.1, 0.9)) state.textRatio = d.textRatio;
+      if (num(d.lineSpacing, 0.85, 1.6)) { state.lineSpacing = d.lineSpacing; lineSpacingInput.value = Math.round(d.lineSpacing * 100); lineSpacingVal.textContent = Math.round(d.lineSpacing * 100); }
       if (num(d.bgBlur, 0, 60)) { state.bgBlur = d.bgBlur; bgBlurInput.value = d.bgBlur; bgBlurVal.textContent = d.bgBlur; }
       if (num(d.bgTint, 0, 1)) { state.bgTint = d.bgTint; bgTintInput.value = Math.round(d.bgTint * 100); bgTintVal.textContent = Math.round(d.bgTint * 100); }
       if (typeof d.fullText === 'boolean') {
