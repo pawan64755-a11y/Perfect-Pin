@@ -229,6 +229,28 @@
     background: none;
     cursor: pointer;
   }
+  #wordSel {
+    position: absolute; display: none; z-index: 4; pointer-events: none;
+    border: 2px dashed #4CAF50; border-radius: 6px;
+    background: rgba(76,175,80,0.14);
+  }
+  .wordBar {
+    display: none; flex: 0 0 auto; align-items: center; gap: 8px; flex-wrap: wrap;
+    margin-top: 8px; padding: 6px 10px;
+    background: #1c1c1c; border: 1px solid #4CAF50; border-radius: 10px;
+  }
+  .wordBar .wname {
+    max-width: 84px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+    font-size: 13px; font-weight: 700; color: #4CAF50;
+  }
+  .wordBar .wpct { font-size: 12px; color: #aaa; width: 40px; text-align: right; }
+  .wordBar button { flex: 0 0 auto; width: 34px; padding: 6px 0; font-size: 16px; line-height: 1; }
+  .wordBar input[type=range] { flex: 1; min-width: 0; }
+  .wordBar .colorRow { flex: 1 0 100%; display: flex; align-items: center; gap: 8px; }
+  .wordBar .colorRow .lbl { font-size: 12px; color: #aaa; flex: 0 0 auto; }
+  .wordBar .colorRow input[type=color] { width: 34px; height: 30px; border: none; border-radius: 6px; padding: 0; background: none; flex: 0 0 auto; }
+  .wordBar .qc { width: 28px; height: 28px; border-radius: 50%; padding: 0; flex: 0 0 auto; border: 2px solid #555; }
+  .wordBar .colorRow .autoBtn { width: auto; margin-left: auto; padding: 6px 10px; font-size: 12px; }
   input.txt { width:100%; background:#1c1c1c; color:#fff; border:1px solid #3a3a3a; border-radius:10px; padding:12px; font-size:14px; font-family:inherit; }
 </style>
 </head>
@@ -240,8 +262,29 @@
     <canvas id="card" width="1080" height="1620"></canvas>
     <div class="placeholder-btn" id="placeholderHint">Select an image below</div>
     <div class="divider" id="divider"><div class="bar"></div></div>
+    <div id="wordSel"></div>
   </div>
-  <div class="hint">📌 Drag the image to reposition · use "Zoom" to crop tighter</div>
+  <div class="wordBar" id="wordBar">
+    <span class="wname" id="wordName"></span>
+    <button id="wordMinus">−</button>
+    <input type="range" id="wordScale" min="30" max="300" step="5" value="100" />
+    <button id="wordPlus">+</button>
+    <span class="wpct" id="wordPct">100%</span>
+    <button id="wordReset" title="Reset this word">↺</button>
+    <button id="wordClose" title="Done">✕</button>
+    <div class="colorRow">
+      <span class="lbl">🎨 Colour</span>
+      <input type="color" id="wordColorPicker" value="#ffffff" />
+      <button class="qc" data-c="#FFFFFF" style="background:#FFFFFF"></button>
+      <button class="qc" data-c="#FFE14D" style="background:#FFE14D"></button>
+      <button class="qc" data-c="#FF4D6D" style="background:#FF4D6D"></button>
+      <button class="qc" data-c="#4DD0E1" style="background:#4DD0E1"></button>
+      <button class="qc" data-c="#7CFC7C" style="background:#7CFC7C"></button>
+      <button class="qc" data-c="#000000" style="background:#000000"></button>
+      <button class="autoBtn" id="wordColorAuto">Auto</button>
+    </div>
+  </div>
+  <div class="hint">👆 Tap any word to resize it · 📌 Drag the image to reposition · "Zoom" to crop tighter</div>
 
   <div class="controls">
     <label class="small">Font Size <span id="fontSizeVal">84</span>px (auto-shrinks to fit)
@@ -409,8 +452,19 @@
     centerY: null,
     cropW: null,
     cropH: null,
-    splitY: 0
+    splitY: 0,
+    wordScales: {},   // per-word size multiplier, keyed by word index (1 = normal)
+    wordColors: {},   // per-word colour override, keyed by word index
+    selectedWord: null,
+    wordRects: []
   };
+
+  const wordSel = document.getElementById('wordSel');
+  const wordBar = document.getElementById('wordBar');
+  const wordName = document.getElementById('wordName');
+  const wordScaleInput = document.getElementById('wordScale');
+  const wordPct = document.getElementById('wordPct');
+  const wordColorPicker = document.getElementById('wordColorPicker');
 
   // Returns { bgColors: [hex] or [hex,hex], text }. In Full Text
   // mode a custom (gradient or manually picked) background takes priority.
@@ -575,45 +629,62 @@
     ctx.textBaseline = 'middle';
     const paragraphs = (state.text || '').split(/\n/);
     const availH = textAreaH - 70;
-    let fs = state.fontSize, lines, lineHeight, totalTextHeight;
+    let fs = state.fontSize, lines, lineHeights, totalTextHeight;
+    const baseFont = (size) => `${state.font.weight} ${size}px ${state.font.stack}`;
     for (;;) { // shrink font until the hook fits its area
-      ctx.font = `${state.font.weight} ${fs}px ${state.font.stack}`;
+      ctx.font = baseFont(fs);
       let gi = 0; lines = [];
       paragraphs.forEach(para => {
         const pw = para.toUpperCase().split(/\s+/).filter(Boolean);
         if (!pw.length) { lines.push([]); return; }
-        const objs = pw.map(word => ({ word, idx: gi++, width: ctx.measureText(word).width }));
+        const objs = pw.map(word => {
+          const idx = gi++;
+          const scale = state.wordScales[idx] || 1;
+          ctx.font = baseFont(fs * scale);
+          return { word, idx, scale, width: ctx.measureText(word).width };
+        });
+        ctx.font = baseFont(fs); // space width is measured at the base size
         layoutLines(objs, maxWidth).forEach(l => lines.push(l));
       });
-      lineHeight = fs * 1.18;
-      totalTextHeight = lines.length * lineHeight;
+      lineHeights = lines.map(l => fs * 1.18 * (l.length ? Math.max(...l.map(w => w.scale)) : 1));
+      totalTextHeight = lineHeights.reduce((a, b) => a + b, 0);
       const tooWide = lines.some(l => l.length === 1 && l[0].width > maxWidth);
       if ((totalTextHeight <= availH && !tooWide) || fs <= 24) break;
       fs -= 2;
     }
+    ctx.font = baseFont(fs);
     const spaceWidth = ctx.measureText(' ').width;
     const lineYs = [];
     let cursorY = textAreaH / 2 - totalTextHeight / 2;
-    lines.forEach(() => { cursorY += lineHeight / 2; lineYs.push(cursorY); cursorY += lineHeight / 2; });
+    lines.forEach((_, i) => { cursorY += lineHeights[i] / 2; lineYs.push(cursorY); cursorY += lineHeights[i] / 2; });
 
     ctx.textAlign = 'left';
+    state.wordRects = [];
     lines.forEach((lineWords, i) => {
       const lineWidth = lineWords.reduce((sum, w) => sum + w.width, 0) + spaceWidth * (lineWords.length - 1);
       let x = SIZE_W / 2 - lineWidth / 2;
       const y = lineYs[i];
+      const maxScale = lineWords.length ? Math.max(...lineWords.map(w => w.scale)) : 1;
       lineWords.forEach(w => {
-        const wordColor = combo.text;
+        const wordColor = state.wordColors[w.idx] || combo.text;
+        const wordFs = fs * w.scale;
+        const wy = y + 0.35 * (fs * maxScale - wordFs); // keep all words on one baseline
+        ctx.font = baseFont(wordFs);
         if (state.outline && state.outlineWidth > 0) {
           ctx.save();
           ctx.lineJoin = 'round';
           ctx.miterLimit = 2;
           ctx.lineWidth = state.outlineWidth * 2; // half is hidden under the fill
           ctx.strokeStyle = state.outlineColor || (luminance(wordColor) > 0.5 ? '#000000' : '#FFFFFF');
-          ctx.strokeText(w.word, x, y);
+          ctx.strokeText(w.word, x, wy);
           ctx.restore();
         }
         ctx.fillStyle = wordColor;
-        ctx.fillText(w.word, x, y);
+        ctx.fillText(w.word, x, wy);
+        state.wordRects.push({
+          idx: w.idx, word: w.word, x, y: wy, w: w.width, h: wordFs,
+          lineTop: y - lineHeights[i] / 2, lineH: lineHeights[i], sp: spaceWidth
+        });
         x += w.width + spaceWidth;
       });
     });
@@ -688,7 +759,61 @@
     placeholderHint.style.top = (splitY * displayRatio) + 'px';
     placeholderHint.style.height = ((SIZE_H - splitY) * displayRatio) + 'px';
     placeholderHint.style.display = (state.image || state.fullText) ? 'none' : 'flex';
+    updateWordUI();
   }
+
+  // Shows the dashed box around the tapped word + the resize bar
+  function updateWordUI() {
+    const sel = state.selectedWord === null ? null : state.wordRects.find(r => r.idx === state.selectedWord);
+    if (!sel) {
+      state.selectedWord = null;
+      wordSel.style.display = 'none';
+      wordBar.style.display = 'none';
+      return;
+    }
+    const k = container.clientWidth / SIZE_W;
+    wordSel.style.display = 'block';
+    wordSel.style.left = ((sel.x - 8) * k) + 'px';
+    wordSel.style.top = ((sel.y - sel.h * 0.6) * k) + 'px';
+    wordSel.style.width = ((sel.w + 16) * k) + 'px';
+    wordSel.style.height = (sel.h * 1.15 * k) + 'px';
+    wordBar.style.display = 'flex';
+    const pct = Math.round((state.wordScales[sel.idx] || 1) * 100);
+    wordName.textContent = sel.word;
+    wordScaleInput.value = pct;
+    wordPct.textContent = pct + '%';
+    wordColorPicker.value = state.wordColors[sel.idx] || currentCombo().text;
+  }
+
+  // Finds which word (if any) sits under a canvas-space point
+  function wordAtPoint(pt) {
+    for (const r of state.wordRects) {
+      if (pt.x >= r.x - r.sp / 2 - 6 && pt.x <= r.x + r.w + r.sp / 2 + 6 &&
+          pt.y >= r.lineTop && pt.y <= r.lineTop + r.lineH) return r;
+    }
+    return null;
+  }
+
+  function setWordScale(pct) {
+    if (state.selectedWord === null) return;
+    pct = Math.max(30, Math.min(300, pct));
+    if (pct === 100) delete state.wordScales[state.selectedWord];
+    else state.wordScales[state.selectedWord] = pct / 100;
+    drawCard();
+  }
+  wordScaleInput.addEventListener('input', () => setWordScale(parseInt(wordScaleInput.value, 10)));
+  document.getElementById('wordMinus').addEventListener('click', () => setWordScale(Math.round((state.wordScales[state.selectedWord] || 1) * 100) - 10));
+  document.getElementById('wordPlus').addEventListener('click', () => setWordScale(Math.round((state.wordScales[state.selectedWord] || 1) * 100) + 10));
+  document.getElementById('wordReset').addEventListener('click', () => setWordScale(100));
+  function setWordColor(c) {
+    if (state.selectedWord === null) return;
+    if (c) state.wordColors[state.selectedWord] = c; else delete state.wordColors[state.selectedWord];
+    drawCard();
+  }
+  wordColorPicker.addEventListener('input', () => setWordColor(wordColorPicker.value));
+  document.querySelectorAll('#wordBar .qc').forEach(b => b.addEventListener('click', () => setWordColor(b.dataset.c)));
+  document.getElementById('wordColorAuto').addEventListener('click', () => setWordColor(null));
+  document.getElementById('wordClose').addEventListener('click', () => { state.selectedWord = null; drawCard(); });
 
   // Converts a pointer event's client coords into canvas-pixel coords
   // (the 1080x1350 space drawCard() works in), regardless of on-screen scale.
@@ -731,6 +856,11 @@
       lastX = e.clientX;
       lastY = e.clientY;
       canvas.setPointerCapture(e.pointerId);
+    } else if (state.fullText || pt.y < state.splitY) {
+      // Tap in the text area: select the word under the finger (tap empty space to deselect)
+      const hit = wordAtPoint(pt);
+      state.selectedWord = hit ? hit.idx : null;
+      drawCard();
     }
   });
 
@@ -822,6 +952,7 @@
 
   factText.addEventListener('input', () => {
     state.text = factText.value;
+    if (!state.text.trim()) { state.wordScales = {}; state.wordColors = {}; state.selectedWord = null; } // fresh hook = fresh sizes
     drawCard();
   });
   outlineToggle.addEventListener('change', () => {
