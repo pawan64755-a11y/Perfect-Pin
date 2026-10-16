@@ -129,7 +129,7 @@
     padding: 12px;
     font-size: 15px;
     font-family: 'Poppins', sans-serif;
-    text-transform: uppercase;
+    text-transform: none;
     resize: none;
     min-height: 70px;
   }
@@ -252,6 +252,17 @@
   .wordBar .qc { width: 28px; height: 28px; border-radius: 50%; padding: 0; flex: 0 0 auto; border: 2px solid #555; }
   .wordBar .colorRow .autoBtn { width: auto; margin-left: auto; padding: 6px 10px; font-size: 12px; }
   input.txt { width:100%; background:#1c1c1c; color:#fff; border:1px solid #3a3a3a; border-radius:10px; padding:12px; font-size:14px; font-family:inherit; }
+  .row.seg button { padding: 10px 6px; font-size: 13px; }
+  .seg button.on { background: #4CAF50; border-color: #4CAF50; }
+  #fitInfo.warn { color: #ffb74d; }
+  #feedPrev { display: none; position: fixed; top: 0; bottom: 0; left: 0; right: 0; max-width: 480px; margin: 0 auto; z-index: 50; background: #0d0d0d; flex-direction: column; padding: 12px; overflow-y: auto; }
+  .fpHead { display: flex; align-items: center; justify-content: space-between; gap: 10px; margin-bottom: 8px; font-size: 15px; }
+  .fpHead button { flex: 0 0 auto; width: 44px; padding: 8px 0; }
+  .fpNote { font-size: 12px; color: #aaa; margin-bottom: 10px; line-height: 1.4; }
+  .fpCols { display: flex; gap: 8px; align-items: flex-start; }
+  .fpCol { flex: 1; min-width: 0; display: flex; flex-direction: column; gap: 8px; }
+  .fpCol img { width: 100%; display: block; border-radius: 14px; }
+  .ghost { background: #222; border-radius: 14px; }
 </style>
 </head>
 <body>
@@ -294,11 +305,23 @@
       <button id="maxFitBtn" class="primary">🔠 Max Fit</button>
       <button id="resetWordsBtn">↺ Reset Word Sizes</button>
     </div>
+    <div class="hint" id="fitInfo"></div>
     <label class="small">Line Spacing <span id="lineSpacingVal">118</span>%
       <input type="range" id="lineSpacing" min="85" max="160" value="118" />
     </label>
 
-    <textarea id="factText" autocomplete="off" placeholder="Write a curiosity hook (4-9 words)..."></textarea>
+    <textarea id="factText" autocomplete="off" placeholder="Write a curiosity hook (4-9 words)... (Enter = new line)"></textarea>
+
+    <div class="row seg" id="caseSeg">
+      <button data-case="upper" class="on">ABC</button>
+      <button data-case="title">Abc</button>
+      <button data-case="as">As typed</button>
+    </div>
+    <div class="row seg" id="alignSeg">
+      <button data-align="center" class="on">⬌ Center</button>
+      <button data-align="left">⬅ Left</button>
+      <button id="balanceBtn" class="on">⚖ Balanced</button>
+    </div>
 
     <div class="toggleRow">
       <span>🔤 Full Text Card (no image)</span>
@@ -308,6 +331,14 @@
     <div class="row">
       <button id="pickImageBtn">📷 Select Image</button>
       <button id="saveBtn" class="primary">💾 Save Post</button>
+    </div>
+    <div class="row">
+      <button id="shareBtn">📤 Share / Gallery</button>
+      <button id="feedBtn">👀 Feed Preview</button>
+    </div>
+    <div class="row seg" id="fmtSeg">
+      <button data-fmt="jpg" class="on">JPG (halka)</button>
+      <button data-fmt="png">PNG</button>
     </div>
     <input type="file" id="fileInput" accept="image/*" />
 
@@ -367,6 +398,15 @@
     <textarea id="seoDesc" readonly style="text-transform:none; min-height:120px; font-size:14px;"></textarea>
     <button id="copyDescBtn">📋 Copy Description</button>
     <div class="hint">Saved image goes to your "Downloads" folder</div>
+  </div>
+</div>
+
+<div id="feedPrev">
+  <div class="fpHead"><b>👀 Feed Preview</b><button id="fpClose">✕</button></div>
+  <div class="fpNote" id="fpNote"></div>
+  <div class="fpCols">
+    <div class="fpCol"><div class="ghost" style="height:150px"></div><img id="fpImg" alt="Pin preview"><div class="ghost" style="height:120px"></div></div>
+    <div class="fpCol"><div class="ghost" style="height:230px"></div><div class="ghost" style="height:170px"></div><div class="ghost" style="height:140px"></div></div>
   </div>
 </div>
 
@@ -452,6 +492,11 @@
     customBg: null,   // { bgColors: [hex] or [hex,hex], text } — Full Text mode only
     textRatio: 0.42,   // fraction of height given to the TEXT area (top)
     fontSize: 84,
+    caseMode: 'upper', // 'upper' | 'title' | 'as'
+    align: 'center',   // 'center' | 'left'
+    balance: true,     // balanced line breaks
+    fmt: 'jpg',        // export format
+    fitSize: 0,        // actual (auto-fitted) font size used on the pin
     lineSpacing: 1.18,
     ctaOn: true, ctaText: "READ FULL ARTICLE →", blogUrl: "",
     text: factText.value,
@@ -573,6 +618,70 @@
   }
   buildSwatches();
 
+  // ---- Text case, alignment, balanced lines, word-style remapping ----
+  let prevText = '';
+  function applyCase(s) {
+    if (state.caseMode === 'upper') return s.toUpperCase();
+    if (state.caseMode === 'title') return s.toLowerCase().replace(/(^|\s)(\S)/g, (m, a, b) => a + b.toUpperCase());
+    return s;
+  }
+  // Same number of lines as the greedy wrap, but with the narrowest width that still gives that count
+  function layoutBalanced(objs, maxWidth) {
+    const lines = layoutLines(objs, maxWidth);
+    if (!state.balance || lines.length < 2) return lines;
+    let lo = Math.max(...objs.map(o => o.width)), hi = maxWidth;
+    while (hi - lo > 4) {
+      const mid = (lo + hi) / 2;
+      if (layoutLines(objs, mid).length === lines.length) hi = mid; else lo = mid;
+    }
+    return layoutLines(objs, hi);
+  }
+  function wordList(t) { return (t || '').split(/\n/).flatMap(p => p.split(/\s+/).filter(Boolean)); }
+  // Keeps per-word size/colour attached to the right word when the hook text is edited
+  function remapWords(oldT, newT) {
+    const a = wordList(oldT).map(w => w.toLowerCase()), b = wordList(newT).map(w => w.toLowerCase());
+    const reset = () => { state.wordScales = {}; state.wordColors = {}; state.selectedWord = null; };
+    if (!b.length) { reset(); return; }
+    if (a.length === b.length) {
+      const diff = a.filter((w, i) => w !== b[i]).length;
+      if (diff === a.length && a.length > 1) reset(); // whole hook replaced = fresh sizes
+      return;
+    }
+    let p = 0; while (p < a.length && p < b.length && a[p] === b[p]) p++;
+    let s = 0; while (s < a.length - p && s < b.length - p && a[a.length - 1 - s] === b[b.length - 1 - s]) s++;
+    const delta = b.length - a.length;
+    const mv = (m) => {
+      const n = {};
+      Object.keys(m).forEach(k => {
+        const i = +k;
+        if (i < p) n[i] = m[k];
+        else if (i >= a.length - s) n[i + delta] = m[k];
+      });
+      return n;
+    };
+    state.wordScales = mv(state.wordScales);
+    state.wordColors = mv(state.wordColors);
+    state.selectedWord = null;
+  }
+  function updateFitInfo(fs) {
+    const el = document.getElementById('fitInfo');
+    if (!el) return;
+    const has = (state.text || '').trim().length > 0;
+    const t = has ? 'Pin par asli text size: ' + fs + 'px' + (fs < 70 ? ' ⚠️ feed me chhota dikhega — hook chhota karo ya text area badhao' : ' ✅') : '';
+    if (el.textContent !== t) el.textContent = t;
+    el.classList.toggle('warn', has && fs < 70);
+  }
+  function syncSeg() {
+    document.querySelectorAll('#caseSeg button').forEach(b => b.classList.toggle('on', b.dataset.case === state.caseMode));
+    document.querySelectorAll('#alignSeg button[data-align]').forEach(b => b.classList.toggle('on', b.dataset.align === state.align));
+    document.getElementById('balanceBtn').classList.toggle('on', state.balance);
+    document.querySelectorAll('#fmtSeg button').forEach(b => b.classList.toggle('on', b.dataset.fmt === state.fmt));
+  }
+  document.querySelectorAll('#caseSeg button').forEach(b => b.addEventListener('click', () => { state.caseMode = b.dataset.case; syncSeg(); drawCard(); }));
+  document.querySelectorAll('#alignSeg button[data-align]').forEach(b => b.addEventListener('click', () => { state.align = b.dataset.align; syncSeg(); drawCard(); }));
+  document.getElementById('balanceBtn').addEventListener('click', () => { state.balance = !state.balance; syncSeg(); drawCard(); });
+  document.querySelectorAll('#fmtSeg button').forEach(b => b.addEventListener('click', () => { state.fmt = b.dataset.fmt; syncSeg(); drawCard(); }));
+
   function layoutLines(wordObjs, maxWidth) {
     const spaceWidth = ctx.measureText(' ').width;
     const lines = [];
@@ -615,6 +724,7 @@
   function drawCard() {
     saveStyle();
     ctx.clearRect(0, 0, SIZE_W, SIZE_H);
+    ctx.imageSmoothingQuality = 'high';
     const combo = currentCombo();
     const splitY = state.fullText ? SIZE_H : Math.round(SIZE_H * state.textRatio);
     state.splitY = splitY;
@@ -643,7 +753,7 @@
       ctx.font = baseFont(size);
       let gi = 0; lines = [];
       paragraphs.forEach(para => {
-        const pw = para.toUpperCase().split(/\s+/).filter(Boolean);
+        const pw = applyCase(para).split(/\s+/).filter(Boolean);
         if (!pw.length) { lines.push([]); return; }
         const objs = pw.map(word => {
           const idx = gi++;
@@ -652,7 +762,7 @@
           return { word, idx, scale, width: ctx.measureText(word).width };
         });
         ctx.font = baseFont(size); // space width is measured at the base size
-        layoutLines(objs, maxWidth).forEach(l => lines.push(l));
+        layoutBalanced(objs, maxWidth).forEach(l => lines.push(l));
       });
       lineHeights = lines.map(l => size * state.lineSpacing * (l.length ? Math.max(...l.map(w => w.scale)) : 1));
       totalTextHeight = lineHeights.reduce((x, y) => x + y, 0);
@@ -666,6 +776,8 @@
       hi = lo; tryFit(hi);
     }
     fs = hi;
+    state.fitSize = fs;
+    updateFitInfo(fs);
     ctx.font = baseFont(fs);
     const spaceWidth = ctx.measureText(' ').width;
     const lineYs = [];
@@ -676,7 +788,7 @@
     state.wordRects = [];
     lines.forEach((lineWords, i) => {
       const lineWidth = lineWords.reduce((sum, w) => sum + w.width, 0) + spaceWidth * (lineWords.length - 1);
-      let x = SIZE_W / 2 - lineWidth / 2;
+      let x = state.align === 'left' ? paddingX : SIZE_W / 2 - lineWidth / 2;
       const y = lineYs[i];
       const maxScale = lineWords.length ? Math.max(...lineWords.map(w => w.scale)) : 1;
       lineWords.forEach(w => {
@@ -759,7 +871,7 @@
       const bx = (SIZE_W - bw) / 2, by = SIZE_H - 48 - 42 - bh;
       ctx.shadowColor = 'rgba(0,0,0,0.4)'; ctx.shadowBlur = 20; ctx.shadowOffsetY = 6;
       ctx.fillStyle = '#E60023';
-      ctx.beginPath(); ctx.roundRect(bx, by, bw, bh, bh / 2); ctx.fill();
+      ctx.beginPath(); if (ctx.roundRect) ctx.roundRect(bx, by, bw, bh, bh / 2); else ctx.rect(bx, by, bw, bh); ctx.fill();
       ctx.shadowColor = 'transparent';
       ctx.fillStyle = '#FFFFFF';
       ctx.textBaseline = 'middle';
@@ -965,8 +1077,8 @@
   });
 
   factText.addEventListener('input', () => {
-    state.text = factText.value;
-    if (!state.text.trim()) { state.wordScales = {}; state.wordColors = {}; state.selectedWord = null; } // fresh hook = fresh sizes
+    const oldText = prevText; prevText = factText.value; state.text = factText.value;
+    remapWords(oldText, state.text); // keep word sizes/colours on the right words
     drawCard();
   });
   outlineToggle.addEventListener('change', () => {
@@ -1011,18 +1123,52 @@
     drawCard();
   });
 
-  document.getElementById('saveBtn').addEventListener('click', () => {
-    canvas.toBlob((blob) => {
-      const url = URL.createObjectURL(blob);
-      const a = document.createElement('a');
-      a.href = url;
-      a.download = 'RelationshipCues_' + ((state.text || 'pin').toLowerCase().replace(/[^a-z0-9]+/g, '-').replace(/^-|-$/g, '').slice(0, 50) || 'pin') + '_' + Date.now() + '.png';
-      document.body.appendChild(a);
-      a.click();
-      document.body.removeChild(a);
-      setTimeout(() => URL.revokeObjectURL(url), 2000);
-    }, 'image/png');
+  // ---- Export: JPG/PNG, Share, Feed preview ----
+  function pinFileName() {
+    const slug = (state.text || 'pin').toLowerCase().replace(/[^a-z0-9]+/g, '-').replace(/^-|-$/g, '').slice(0, 50) || 'pin';
+    return 'RelationshipCues_' + slug + '_' + Date.now() + (state.fmt === 'png' ? '.png' : '.jpg');
+  }
+  async function prepExport() {
+    try { // make sure the fonts are really loaded before the pixels are written
+      await Promise.all([
+        document.fonts.load(state.font.weight + ' 60px ' + state.font.stack, 'Aa'),
+        document.fonts.load('800 44px "Poppins"', 'Aa'),
+        document.fonts.load('700 24px "Poppins"', 'Aa')
+      ]);
+    } catch (e) {}
+    drawCard();
+    return new Promise(res => canvas.toBlob(res, state.fmt === 'png' ? 'image/png' : 'image/jpeg', 0.92));
+  }
+  function downloadBlob(blob, name) {
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement('a');
+    a.href = url; a.download = name;
+    document.body.appendChild(a); a.click(); document.body.removeChild(a);
+    setTimeout(() => URL.revokeObjectURL(url), 2000);
+  }
+  document.getElementById('saveBtn').addEventListener('click', async () => {
+    const blob = await prepExport();
+    if (blob) downloadBlob(blob, pinFileName());
   });
+  document.getElementById('shareBtn').addEventListener('click', async () => {
+    const blob = await prepExport();
+    if (!blob) return;
+    const name = pinFileName();
+    const file = new File([blob], name, { type: blob.type });
+    if (navigator.canShare && navigator.canShare({ files: [file] })) {
+      try { await navigator.share({ files: [file] }); return; }
+      catch (err) { if (err && err.name === 'AbortError') return; }
+    }
+    downloadBlob(blob, name); // share not supported here: fall back to a normal download
+  });
+  const feedPrev = document.getElementById('feedPrev');
+  document.getElementById('feedBtn').addEventListener('click', () => {
+    document.getElementById('fpImg').src = canvas.toDataURL('image/jpeg', 0.85);
+    const sz = state.fitSize ? ' (text size ' + state.fitSize + 'px)' : '';
+    document.getElementById('fpNote').textContent = 'Pinterest feed me pin lagbhag itna hi chhota dikhta hai' + sz + '. Text padhna mushkil lage to font bada karo ya hook chhota karo.';
+    feedPrev.style.display = 'flex';
+  });
+  document.getElementById('fpClose').addEventListener('click', () => { feedPrev.style.display = 'none'; });
 
   // ---- Pinterest click boosters: hooks, CTA, SEO text ----
   const CTAS = ["READ FULL ARTICLE →", "TAP TO READ MORE →", "GET THE FULL GUIDE →", "CLICK TO READ →", "READ THIS NEXT →"];
@@ -1030,13 +1176,13 @@
   const ctaToggle = document.getElementById('ctaToggle'), ctaControls = document.getElementById('ctaControls');
   const blogUrlInput = document.getElementById('blogUrl'), seoTitle = document.getElementById('seoTitle'), seoDesc = document.getElementById('seoDesc');
 
-  function titleCase(t) { return t.toLowerCase().replace(/\b\w/g, c => c.toUpperCase()); }
+  function titleCase(t) { return t.toLowerCase().replace(/(^|\s)(\S)/g, (m, a, b) => a + b.toUpperCase()); }
   function updateSeo() {
     const hook = (state.text || '').replace(/\s+/g, ' ').trim();
     if (!hook) { seoTitle.value = ''; seoDesc.value = ''; return; }
     seoTitle.value = titleCase(hook).slice(0, 100);
     const link = state.blogUrl ? '\n\n👉 ' + state.blogUrl : '';
-    seoDesc.value = hook.charAt(0) + hook.slice(1).toLowerCase() +
+    seoDesc.value = (hook === hook.toUpperCase() ? hook.charAt(0) + hook.slice(1).toLowerCase() : hook) +
       '... Tap to read the full article on Relationship Cues.' + link +
       '\n\n#relationshipadvice #relationshiptips #healthyrelationships #relationshipgoals #couplegoals #datingadvice';
   }
@@ -1085,7 +1231,8 @@
         fontSize: state.fontSize, lineSpacing: state.lineSpacing, textRatio: state.textRatio, fullText: state.fullText,
         bgBlur: state.bgBlur, bgTint: state.bgTint,
         outline: state.outline, outlineWidth: state.outlineWidth, outlineColor: state.outlineColor,
-        ctaOn: state.ctaOn, ctaText: state.ctaText
+        ctaOn: state.ctaOn, ctaText: state.ctaText,
+        caseMode: state.caseMode, align: state.align, balance: state.balance, fmt: state.fmt
       }));
     } catch (e) {}
   }
@@ -1118,6 +1265,11 @@
         ctaControls.style.display = d.ctaOn ? 'flex' : 'none';
       }
       if (typeof d.ctaText === 'string' && CTAS.includes(d.ctaText)) state.ctaText = d.ctaText;
+      if (['upper', 'title', 'as'].includes(d.caseMode)) state.caseMode = d.caseMode;
+      if (['center', 'left'].includes(d.align)) state.align = d.align;
+      if (typeof d.balance === 'boolean') state.balance = d.balance;
+      if (['jpg', 'png'].includes(d.fmt)) state.fmt = d.fmt;
+      syncSeg();
       buildFontRow(); buildSwatches(); buildCtaRow();
     } catch (e) {}
   }
@@ -1126,7 +1278,7 @@
 
   // Always start with an empty text box (browsers can otherwise restore the old text on reload)
   function clearTextOnOpen() {
-    factText.value = ''; state.text = '';
+    factText.value = ''; state.text = ''; prevText = ''; state.wordScales = {}; state.wordColors = {}; state.selectedWord = null;
     seoTitle.value = ''; seoDesc.value = '';
   }
   clearTextOnOpen();
